@@ -4,6 +4,11 @@ import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
 import {
+  DEFAULT_CHECKPOINT_FILE_NAME,
+  DEFAULT_COMMENT_JSON_FILE,
+  DEFAULT_PROMPT_EXPORT_SUFFIX,
+} from "./project-config.js";
+import {
   applyDefaults,
   extractPrompt,
   getPassport,
@@ -17,7 +22,7 @@ const __dirname = path.dirname(__filename);
 
 function parseCliArgs(argv) {
   const args = {
-    inputFile: "xhs_comments_1773912983505.json",
+    inputFile: DEFAULT_COMMENT_JSON_FILE,
     outputDir: "",
     concurrency: 2,
     lang: "简体中文",
@@ -33,7 +38,7 @@ function parseCliArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (!token.startsWith("--")) {
-      if (!args.inputFile || args.inputFile === "xhs_comments_1773912983505.json") {
+      if (!args.inputFile || args.inputFile === DEFAULT_COMMENT_JSON_FILE) {
         args.inputFile = token;
       } else if (!args.outputDir) {
         args.outputDir = token;
@@ -109,6 +114,11 @@ function normalizeText(value, fallback = "无") {
   return trimmed ? trimmed : fallback;
 }
 
+function hasActualText(value) {
+  const trimmed = String(value ?? "").trim();
+  return Boolean(trimmed) && trimmed !== "无";
+}
+
 function compactText(text) {
   return String(text ?? "").replace(/\s+/g, "");
 }
@@ -165,25 +175,82 @@ function isPromptLike(text) {
   return score >= 4 || (score >= 3 && len >= 24) || (/^(口令|提示词|指令|AI 口令|AI口令)/.test(raw) && len >= 8);
 }
 
+function truncateAtWatermarkCue(text) {
+  const raw = String(text ?? "");
+  const cuePattern = /(豆包AI生成|豆包|小红书(?:AI生成)?|小红书水印|水印|logo)/i;
+  const match = cuePattern.exec(raw);
+  if (!match || typeof match.index !== "number" || match.index < 0) {
+    return raw;
+  }
+
+  const suffix = raw.slice(match.index);
+  const sentenceBoundary = suffix.search(/[。！？!?；;\n]/);
+  if (sentenceBoundary >= 0) {
+    return raw.slice(0, match.index + sentenceBoundary + 1);
+  }
+
+  const clauseBoundary = suffix.search(/[，,、]/);
+  if (clauseBoundary >= 0) {
+    return raw.slice(0, match.index + clauseBoundary + 1);
+  }
+
+  return raw.slice(0, match.index + match[0].length);
+}
+
 function sanitizeReversePrompt(text) {
   const raw = String(text ?? "").replace(/\r\n/g, "\n");
   if (!raw.trim()) {
     return "";
   }
 
-  let cleaned = raw;
+  let cleaned = truncateAtWatermarkCue(raw);
   const watermarkPatterns = [
-    // 例如：右下角有“豆包AI生成”水印、右下角有“小红书”水印
-    /(?:^|[，,。；;！!？?\n\s])(?:右下角|左下角|左上角|右上角)?(?:有|带有|带|显示|显示为|放置|位于|出现)?[“"']?(?:豆包AI生成|豆包|小红书(?:AI生成)?|小红书水印)[”"']?(?:水印|logo|标识)?(?:$|[，,。；;！!？?\n\s])/gi,
     // 例如：无法识别的水印位于右下角、无文字，无标识，无水印
-    /(?:^|[，,。；;！!？?\n\s])(?:无法识别的水印位于右下角|无法识别的水印|右下角(?:有|带有|带|位于)?[^，。；;！!？?\n]{0,16}水印|(?:无文字|无标识|无水印)(?:[，,。；;！!？?\n\s]|$))/gi,
-    // 任何明确提到水印 / logo / 标识 的片段都删掉，避免混入提示词
-    /(?:^|[，,。；;！!？?\n\s])[^，。；;！!？?\n]{0,24}(?:水印|logo|标识)[^，。；;！!？?\n]{0,24}(?:$|[，,。；;！!？?\n\s])/gi,
+    /(?:^|[，,。；;！!？?\n\s])(?:无法识别的水印位于右下角|无法识别的水印|无文字|无标识|无水印)(?=$|[，,。；;！!？?\n\s])/gi,
   ];
 
   for (const pattern of watermarkPatterns) {
     cleaned = cleaned.replace(pattern, " ");
   }
+
+  cleaned = truncateAtWatermarkCue(cleaned);
+
+  cleaned = cleaned
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/([，,。；;！!？?、\s])\1+/g, "$1");
+
+  const seenFragments = new Set();
+  const paragraphSegments = cleaned
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const uniqueParts = [];
+
+      for (const part of line.split(/[，,、；;]+/)) {
+        const trimmed = part.trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        const key = compactText(trimmed);
+        if (!key || seenFragments.has(key)) {
+          continue;
+        }
+
+        seenFragments.add(key);
+        uniqueParts.push(trimmed);
+      }
+
+      if (uniqueParts.length === 0) {
+        return "";
+      }
+
+      return uniqueParts.join("，");
+    })
+    .filter(Boolean);
+
+  cleaned = paragraphSegments.join("\n");
 
   cleaned = cleaned
     .replace(/[ \t]+/g, " ")
@@ -195,6 +262,23 @@ function sanitizeReversePrompt(text) {
     .trim();
 
   return cleaned;
+}
+
+function collectRepeatedFragments(text) {
+  const fragments = String(text ?? "")
+    .split(/\n+/)
+    .flatMap((line) => line.split(/[，,、；;]+/))
+    .map((part) => compactText(part.trim()))
+    .filter(Boolean);
+
+  const counts = new Map();
+  for (const fragment of fragments) {
+    counts.set(fragment, (counts.get(fragment) || 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([fragment]) => fragment);
 }
 
 function extractImageSrc(image) {
@@ -289,7 +373,7 @@ function normalizeSavedRow(saved, fallbackRow) {
     rowKey: fallbackRow.rowKey,
     status: saved.status || "done",
     originalPrompt: savedOriginalPrompt || fallbackOriginalPrompt,
-    reversePrompt: saved.reversePrompt || "",
+    reversePrompt: sanitizeReversePrompt(saved.reversePrompt || ""),
     reverseError: saved.reverseError || "",
     localImageAbs: saved.localImageAbs || "",
     localImageRel: saved.localImageRel || "",
@@ -472,9 +556,16 @@ async function mapWithConcurrency(items, limit, iterator) {
 }
 
 function buildHtml(rows, meta) {
+  const repeatedFragmentCount = rows.reduce((total, row) => {
+    const fragments = collectRepeatedFragments(row.reversePrompt);
+    return total + fragments.length;
+  }, 0);
   const tableRows = rows.map((row, index) => {
     const promptHtml = escapeHtml(row.originalPrompt || "无").replace(/\n/g, "<br>");
-    const reverseHtml = escapeHtml(row.reversePrompt || row.reverseError || "处理中").replace(/\n/g, "<br>");
+    const sanitizedReversePrompt = sanitizeReversePrompt(row.reversePrompt || "");
+    const reverseText = row.reverseError
+      || (hasActualText(sanitizedReversePrompt) ? sanitizedReversePrompt : "待补抓");
+    const reverseHtml = escapeHtml(reverseText).replace(/\n/g, "<br>");
     const imageHtml = row.localImageRel
       ? `
           <a href="${escapeHtml(row.localImageRel)}" target="_blank" rel="noreferrer">
@@ -638,13 +729,16 @@ function buildHtml(rows, meta) {
       <div class="desc">
         来源文件：${escapeHtml(meta.inputFile)}<br>
         输出目录：${escapeHtml(meta.outputDir)}<br>
-        说明：图片已下载到本地，HTML 打开后可直接离线查看；反推提示词使用 get-prompt-api，语言固定为简体中文。
+        说明：图片已下载到本地，HTML 打开后可直接离线查看；反推提示词使用 get-prompt-api，语言固定为简体中文，并已启用水印清理与重复片段过滤。
       </div>
       <div class="stats">
         <div class="stat"><div class="label">图片条数</div><div class="value">${meta.totalRows}</div></div>
         <div class="stat"><div class="label">带原作者提示词</div><div class="value">${meta.promptRows}</div></div>
         <div class="stat"><div class="label">反推成功</div><div class="value">${meta.reverseOkRows}</div></div>
-        <div class="stat"><div class="label">失败/待处理</div><div class="value">${meta.reverseFailRows}</div></div>
+        <div class="stat"><div class="label">失败/待补抓</div><div class="value">${meta.reverseFailRows}</div></div>
+      </div>
+      <div class="desc" style="margin-top:10px;">
+        当前页共检测到 ${repeatedFragmentCount} 个重复片段，已在展示时自动过滤。
       </div>
     </section>
 
@@ -682,11 +776,11 @@ async function main() {
 
   const inputFile = path.resolve(cli.inputFile);
   const inputBase = path.basename(inputFile, path.extname(inputFile));
-  const outputDir = path.resolve(cli.outputDir || `${inputBase}-prompt-export`);
+  const outputDir = path.resolve(cli.outputDir || `${inputBase}${DEFAULT_PROMPT_EXPORT_SUFFIX}`);
   const imagesDir = path.join(outputDir, "images");
   const htmlPath = path.join(outputDir, "index.html");
   const jsonPath = path.join(outputDir, "rows.json");
-  const checkpointPath = path.join(outputDir, ".resume.json");
+  const checkpointPath = path.join(outputDir, DEFAULT_CHECKPOINT_FILE_NAME);
 
   const inputRaw = await fs.readFile(inputFile, "utf8");
   const data = JSON.parse(inputRaw);
@@ -727,8 +821,8 @@ async function main() {
       outputDir,
       totalRows: mergedRows.length,
       promptRows: mergedRows.filter((row) => normalizeText(row.originalPrompt, "无") !== "无").length,
-      reverseOkRows: mergedRows.filter((row) => row.status === "done" && row.reversePrompt && !row.reverseError).length,
-      reverseFailRows: mergedRows.filter((row) => row.status !== "done" || row.reverseError || !row.reversePrompt).length,
+      reverseOkRows: mergedRows.filter((row) => row.status === "done" && hasActualText(row.reversePrompt) && !row.reverseError).length,
+      reverseFailRows: mergedRows.filter((row) => row.status !== "done" || row.reverseError || !hasActualText(row.reversePrompt)).length,
     };
 
     await fs.writeFile(jsonPath, JSON.stringify({ summary, rows: mergedRows }, null, 2), "utf8");
@@ -799,7 +893,7 @@ async function main() {
       savedRow?.status === "done"
       && savedRow.localImageAbs
       && (await fileExists(savedRow.localImageAbs))
-      && (cli.skipReverse || Boolean(savedRow.reversePrompt))
+      && (cli.skipReverse || hasActualText(savedRow.reversePrompt))
     ) {
       return savedRow;
     }
@@ -842,7 +936,7 @@ async function main() {
       result.reverseError = "";
 
       if (!cli.skipReverse) {
-        const shouldRetryReverse = result.status !== "done" || !result.reversePrompt;
+        const shouldRetryReverse = result.status !== "done" || !hasActualText(result.reversePrompt);
         if (shouldRetryReverse) {
           const uploaded = await uploadImage({ ...baseConfig, passport, imagePath: localImageAbs });
           const runResult = await runWorkflow({
@@ -853,6 +947,8 @@ async function main() {
           });
           const cleanedPrompt = sanitizeReversePrompt(extractPrompt(runResult.output));
           result.reversePrompt = cleanedPrompt || "无";
+        } else {
+          result.reversePrompt = sanitizeReversePrompt(result.reversePrompt) || "无";
         }
       }
 
@@ -878,8 +974,8 @@ async function main() {
     outputDir,
     totalRows: preparedRows.length,
     promptRows: preparedRows.filter((row) => normalizeText(row.originalPrompt, "无") !== "无").length,
-    reverseOkRows: preparedRows.filter((row) => row.status === "done" && row.reversePrompt && !row.reverseError).length,
-    reverseFailRows: preparedRows.filter((row) => row.status !== "done" || row.reverseError || !row.reversePrompt).length,
+    reverseOkRows: preparedRows.filter((row) => row.status === "done" && hasActualText(row.reversePrompt) && !row.reverseError).length,
+    reverseFailRows: preparedRows.filter((row) => row.status !== "done" || row.reverseError || !hasActualText(row.reversePrompt)).length,
   };
 
   await fs.writeFile(jsonPath, JSON.stringify({ summary, rows: preparedRows }, null, 2), "utf8");
@@ -894,7 +990,13 @@ async function main() {
   }, null, 2));
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+if (process.argv[1] === __filename) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}
+
+export {
+  sanitizeReversePrompt,
+};

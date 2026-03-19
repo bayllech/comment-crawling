@@ -2,6 +2,7 @@
 
 import fs from "fs";
 import path from "path";
+import { DEFAULT_COMMENT_JSON_FILE } from "./project-config.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -654,7 +655,7 @@ function getDefaultOutputPath(inputPath) {
 }
 
 function main() {
-  const inputArg = process.argv[2] || "xhs_comments.json";
+  const inputArg = process.argv[2] || DEFAULT_COMMENT_JSON_FILE;
   const inputPath = path.resolve(process.cwd(), inputArg);
   const outputArg = process.argv[3];
   const outputPath = outputArg ? path.resolve(process.cwd(), outputArg) : getDefaultOutputPath(inputPath);

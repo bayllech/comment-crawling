@@ -71,7 +71,7 @@ GET_PROMPT_USER_CODE=260220
 
 ## 用法
 
-默认转换当前目录下的 `xhs_comments_1773912983505.json`：
+默认转换当前目录下的评论 JSON 文件，默认文件名见 `project-config.js`：
 
 ```bash
 node render-xhs-comments.js
@@ -104,7 +104,7 @@ node render-xhs-comments.js ./你的评论文件.json ./输出页面.html
 
 ## 适用结构
 
-适用于同一类 `xhs_comments_1773912983505.json` 结构，至少包含以下字段：
+适用于同一类评论 JSON 结构，至少包含以下字段：
 
 ```json
 {
@@ -158,13 +158,13 @@ node render-xhs-comments.js ./你的评论文件.json ./输出页面.html
 如果你的目标是把小红书评论里的图片、原作者提示词和反推提示词一起导出，建议直接使用新脚本：
 
 ```bash
-node extract-xhs-image-prompts.js ./xhs_comments_1773912983505.json ./xhs_comments_1773912983505-prompt-export
+node extract-xhs-image-prompts.js ./xhs_comments.json ./xhs_comments-prompt-export
 ```
 
 或者：
 
 ```bash
-npm run xhs:prompts -- ./xhs_comments_1773912983505.json ./xhs_comments_1773912983505-prompt-export
+npm run xhs:prompts -- ./xhs_comments.json ./xhs_comments-prompt-export
 ```
 
 输出内容：
