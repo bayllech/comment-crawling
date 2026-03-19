@@ -71,7 +71,7 @@ GET_PROMPT_USER_CODE=260220
 
 ## 用法
 
-默认转换当前目录下的评论 JSON 文件，默认文件名见 `project-config.js`：
+默认情况下会自动扫描当前目录及子目录里的 JSON 文件；如果只找到一个就直接处理，找到多个时会让你选择。也可以继续手动传入输入文件：
 
 ```bash
 node render-xhs-comments.js
@@ -155,7 +155,27 @@ node render-xhs-comments.js ./你的评论文件.json ./输出页面.html
 
 ## 评论图片提示词提取
 
-如果你的目标是把小红书评论里的图片、原作者提示词和反推提示词一起导出，建议直接使用新脚本：
+如果你的目标是把小红书评论里的图片、评论区提示词和反推提示词一起导出，建议直接使用一键入口：
+
+```bash
+npm run xhs:auto
+```
+
+或者：
+
+```bash
+node extract-xhs-image-prompts.js
+```
+
+运行后脚本会：
+
+- 自动扫描当前目录及子目录里的 JSON 文件
+- 在有多个候选时让你选一个，基本只需要输入编号
+- 自动完成图片下载、评论区提示词提取、反推提示词
+- 在终端显示进度条和当前阶段
+- 最后输出完成提示，并告知你直接打开 `index.html` 即可查看
+
+如果你想指定输入和输出目录，仍然支持原来的参数方式：
 
 ```bash
 node extract-xhs-image-prompts.js ./xhs_comments.json ./xhs_comments-prompt-export
@@ -178,7 +198,7 @@ npm run xhs:prompts -- ./xhs_comments.json ./xhs_comments-prompt-export
 - `--user-code`：`get-prompt-api` 需要的用户码
 - `--lang`：默认 `简体中文`
 - `--concurrency`：下载和反推并发数，默认 `2`
-- `--skip-reverse`：只下载图片和提取原作者提示词，不执行反推
+- `--skip-reverse`：只下载图片和提取评论区提示词，不执行反推
 - `--fresh`：忽略已有断点记录，从头重新处理
 
 断点续跑说明：
@@ -190,7 +210,7 @@ npm run xhs:prompts -- ./xhs_comments.json ./xhs_comments-prompt-export
 说明：
 
 - 图片链接来自小红书 CDN，具有时效性，所以脚本会先把图片保存到本地
-- 原作者提示词会优先从“同一作者、同一线程、连续的提示词分段”中合并
-- 原作者提示词会在同一线程内优先收集更像提示词的评论文本，不再只认同一作者
-- 反推提示词会默认使用 `user_code=260220`，并清理包含水印相关表述的片段
-- 如果找不到原作者提示词，导出结果会写 `无`
+- 评论区提示词会优先从“同一作者、同一线程、连续的提示词分段”中合并
+- 评论区提示词会在同一线程内优先收集更像提示词的评论文本，不再只认同一作者
+- 反推提示词会默认使用 `user_code=260220`，并原样保留接口返回内容
+- 如果找不到评论区提示词，导出结果会写 `无`

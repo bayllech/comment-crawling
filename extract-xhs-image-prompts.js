@@ -2,6 +2,7 @@
 
 import fs from "fs/promises";
 import path from "path";
+import { createInterface } from "readline/promises";
 import { fileURLToPath } from "url";
 import {
   DEFAULT_CHECKPOINT_FILE_NAME,
@@ -22,7 +23,8 @@ const __dirname = path.dirname(__filename);
 
 function parseCliArgs(argv) {
   const args = {
-    inputFile: DEFAULT_COMMENT_JSON_FILE,
+    inputFile: "",
+    inputProvided: false,
     outputDir: "",
     concurrency: 2,
     lang: "简体中文",
@@ -40,6 +42,7 @@ function parseCliArgs(argv) {
     if (!token.startsWith("--")) {
       if (!args.inputFile || args.inputFile === DEFAULT_COMMENT_JSON_FILE) {
         args.inputFile = token;
+        args.inputProvided = true;
       } else if (!args.outputDir) {
         args.outputDir = token;
       }
@@ -52,6 +55,7 @@ function parseCliArgs(argv) {
     switch (flag) {
       case "--input":
         args.inputFile = readValue();
+        args.inputProvided = true;
         if (!inlineValue) index += 1;
         break;
       case "--output":
@@ -175,112 +179,6 @@ function isPromptLike(text) {
   return score >= 4 || (score >= 3 && len >= 24) || (/^(口令|提示词|指令|AI 口令|AI口令)/.test(raw) && len >= 8);
 }
 
-function truncateAtWatermarkCue(text) {
-  const raw = String(text ?? "");
-  const cuePattern = /(豆包AI生成|豆包|小红书(?:AI生成)?|小红书水印|水印|logo)/i;
-  const match = cuePattern.exec(raw);
-  if (!match || typeof match.index !== "number" || match.index < 0) {
-    return raw;
-  }
-
-  const suffix = raw.slice(match.index);
-  const sentenceBoundary = suffix.search(/[。！？!?；;\n]/);
-  if (sentenceBoundary >= 0) {
-    return raw.slice(0, match.index + sentenceBoundary + 1);
-  }
-
-  const clauseBoundary = suffix.search(/[，,、]/);
-  if (clauseBoundary >= 0) {
-    return raw.slice(0, match.index + clauseBoundary + 1);
-  }
-
-  return raw.slice(0, match.index + match[0].length);
-}
-
-function sanitizeReversePrompt(text) {
-  const raw = String(text ?? "").replace(/\r\n/g, "\n");
-  if (!raw.trim()) {
-    return "";
-  }
-
-  let cleaned = truncateAtWatermarkCue(raw);
-  const watermarkPatterns = [
-    // 例如：无法识别的水印位于右下角、无文字，无标识，无水印
-    /(?:^|[，,。；;！!？?\n\s])(?:无法识别的水印位于右下角|无法识别的水印|无文字|无标识|无水印)(?=$|[，,。；;！!？?\n\s])/gi,
-  ];
-
-  for (const pattern of watermarkPatterns) {
-    cleaned = cleaned.replace(pattern, " ");
-  }
-
-  cleaned = truncateAtWatermarkCue(cleaned);
-
-  cleaned = cleaned
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/([，,。；;！!？?、\s])\1+/g, "$1");
-
-  const seenFragments = new Set();
-  const paragraphSegments = cleaned
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const uniqueParts = [];
-
-      for (const part of line.split(/[，,、；;]+/)) {
-        const trimmed = part.trim();
-        if (!trimmed) {
-          continue;
-        }
-
-        const key = compactText(trimmed);
-        if (!key || seenFragments.has(key)) {
-          continue;
-        }
-
-        seenFragments.add(key);
-        uniqueParts.push(trimmed);
-      }
-
-      if (uniqueParts.length === 0) {
-        return "";
-      }
-
-      return uniqueParts.join("，");
-    })
-    .filter(Boolean);
-
-  cleaned = paragraphSegments.join("\n");
-
-  cleaned = cleaned
-    .replace(/[ \t]+/g, " ")
-    .replace(/ *([，,。；;！!？?])/g, "$1")
-    .replace(/([，,。；;！!？?]){2,}/g, "$1")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[，,。；;！!？?\s]+$/g, "")
-    .replace(/^[，,。；;！!？?\s]+/g, "")
-    .trim();
-
-  return cleaned;
-}
-
-function collectRepeatedFragments(text) {
-  const fragments = String(text ?? "")
-    .split(/\n+/)
-    .flatMap((line) => line.split(/[，,、；;]+/))
-    .map((part) => compactText(part.trim()))
-    .filter(Boolean);
-
-  const counts = new Map();
-  for (const fragment of fragments) {
-    counts.set(fragment, (counts.get(fragment) || 0) + 1);
-  }
-
-  return [...counts.entries()]
-    .filter(([, count]) => count > 1)
-    .map(([fragment]) => fragment);
-}
-
 function extractImageSrc(image) {
   if (!image) {
     return "";
@@ -373,7 +271,7 @@ function normalizeSavedRow(saved, fallbackRow) {
     rowKey: fallbackRow.rowKey,
     status: saved.status || "done",
     originalPrompt: savedOriginalPrompt || fallbackOriginalPrompt,
-    reversePrompt: sanitizeReversePrompt(saved.reversePrompt || ""),
+    reversePrompt: typeof saved.reversePrompt === "string" ? saved.reversePrompt : String(saved.reversePrompt ?? ""),
     reverseError: saved.reverseError || "",
     localImageAbs: saved.localImageAbs || "",
     localImageRel: saved.localImageRel || "",
@@ -555,16 +453,211 @@ async function mapWithConcurrency(items, limit, iterator) {
   return results;
 }
 
+function isIgnoredDirectoryName(dirName) {
+  return (
+    dirName === "node_modules"
+    || dirName === ".git"
+    || dirName === ".cocoindex_code"
+    || dirName === ".idea"
+    || dirName === "dist"
+    || dirName === "build"
+    || dirName.endsWith("-prompt-export")
+  );
+}
+
+function isIgnoredJsonFile(fileName) {
+  return (
+    fileName === "package.json"
+    || fileName === "package-lock.json"
+    || fileName === "rows.json"
+    || fileName.endsWith(".resume.json")
+  );
+}
+
+function formatFileSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "未知大小";
+  }
+
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "未知时间";
+  }
+
+  return date.toLocaleString("zh-CN");
+}
+
+function formatProgressBar(done, total, width = 24) {
+  const safeTotal = Math.max(0, Number(total) || 0);
+  const safeDone = Math.max(0, Math.min(Number(done) || 0, safeTotal));
+
+  if (safeTotal === 0) {
+    return "[------------------------] 0/0";
+  }
+
+  const ratio = safeDone / safeTotal;
+  const filled = Math.max(0, Math.min(width, Math.round(ratio * width)));
+  const empty = Math.max(0, width - filled);
+  const percent = Math.round(ratio * 100);
+  return `[${"#".repeat(filled)}${"-".repeat(empty)}] ${safeDone}/${safeTotal} (${percent}%)`;
+}
+
+function createProgressRenderer() {
+  const isInteractive = process.stdout.isTTY;
+  let lastSnapshot = "";
+
+  function render(lines) {
+    const snapshot = lines.join("\n");
+    if (snapshot === lastSnapshot) {
+      return;
+    }
+
+    lastSnapshot = snapshot;
+
+    if (isInteractive) {
+      process.stdout.write("\x1b[2J\x1b[H");
+      process.stdout.write(`${snapshot}\n`);
+      return;
+    }
+
+    console.log(snapshot);
+  }
+
+  return {
+    render,
+    isInteractive,
+  };
+}
+
+async function collectJsonFiles(rootDir) {
+  const result = [];
+
+  async function walk(currentDir) {
+    let entries;
+    try {
+      entries = await fs.readdir(currentDir, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "EACCES" || error?.code === "ENOENT") {
+        return;
+      }
+      throw error;
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (isIgnoredDirectoryName(entry.name)) {
+          continue;
+        }
+        await walk(path.join(currentDir, entry.name));
+        continue;
+      }
+
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".json")) {
+        continue;
+      }
+      if (isIgnoredJsonFile(entry.name)) {
+        continue;
+      }
+
+      const fullPath = path.join(currentDir, entry.name);
+      try {
+        const stat = await fs.stat(fullPath);
+        result.push({
+          path: fullPath,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        });
+      } catch {
+        // 文件在扫描过程中被移动或删除时，直接跳过。
+      }
+    }
+  }
+
+  await walk(rootDir);
+  result.sort((left, right) => right.mtimeMs - left.mtimeMs || left.path.localeCompare(right.path));
+  return result;
+}
+
+async function chooseInputFile({ inputFile, inputProvided }) {
+  if (inputProvided) {
+    const resolved = path.resolve(inputFile || "");
+    if (!resolved || !(await fileExists(resolved))) {
+      throw new Error(`指定的输入文件不存在：${inputFile || "空路径"}`);
+    }
+    return resolved;
+  }
+
+  const candidates = await collectJsonFiles(process.cwd());
+  if (candidates.length === 0) {
+    if (await fileExists(path.resolve(DEFAULT_COMMENT_JSON_FILE))) {
+      return path.resolve(DEFAULT_COMMENT_JSON_FILE);
+    }
+    throw new Error("当前目录及子目录未找到可用的 JSON 文件，请手动传入 --input <文件路径>");
+  }
+
+  if (candidates.length === 1) {
+    return candidates[0].path;
+  }
+
+  if (!process.stdin.isTTY) {
+    return candidates[0].path;
+  }
+
+  console.log("检测到多个 JSON 文件，请选择一个：");
+  candidates.slice(0, 40).forEach((item, index) => {
+    const relativePath = path.relative(process.cwd(), item.path);
+    console.log(`  ${String(index + 1).padStart(2, "0")}. ${relativePath}  (${formatFileSize(item.size)}，${formatTime(item.mtimeMs)})`);
+  });
+
+  if (candidates.length > 40) {
+    console.log(`  ... 另外还有 ${candidates.length - 40} 个文件未显示`);
+  }
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  try {
+    const answer = (await rl.question("输入编号或直接粘贴文件路径，回车默认第 1 个：")).trim();
+    if (!answer) {
+      return candidates[0].path;
+    }
+
+    const numeric = Number(answer);
+    if (Number.isInteger(numeric) && numeric >= 1 && numeric <= candidates.length) {
+      return candidates[numeric - 1].path;
+    }
+
+    const manualPath = path.resolve(answer);
+    if (await fileExists(manualPath)) {
+      return manualPath;
+    }
+
+    console.log("未找到你输入的文件，已自动改为第 1 个候选。");
+    return candidates[0].path;
+  } finally {
+    rl.close();
+  }
+}
+
 function buildHtml(rows, meta) {
-  const repeatedFragmentCount = rows.reduce((total, row) => {
-    const fragments = collectRepeatedFragments(row.reversePrompt);
-    return total + fragments.length;
-  }, 0);
   const tableRows = rows.map((row, index) => {
     const promptHtml = escapeHtml(row.originalPrompt || "无").replace(/\n/g, "<br>");
-    const sanitizedReversePrompt = sanitizeReversePrompt(row.reversePrompt || "");
     const reverseText = row.reverseError
-      || (hasActualText(sanitizedReversePrompt) ? sanitizedReversePrompt : "待补抓");
+      || (hasActualText(row.reversePrompt) ? row.reversePrompt : "待补抓");
     const reverseHtml = escapeHtml(reverseText).replace(/\n/g, "<br>");
     const imageHtml = row.localImageRel
       ? `
@@ -729,16 +822,13 @@ function buildHtml(rows, meta) {
       <div class="desc">
         来源文件：${escapeHtml(meta.inputFile)}<br>
         输出目录：${escapeHtml(meta.outputDir)}<br>
-        说明：图片已下载到本地，HTML 打开后可直接离线查看；反推提示词使用 get-prompt-api，语言固定为简体中文，并已启用水印清理与重复片段过滤。
+        说明：图片已下载到本地，HTML 打开后可直接离线查看；反推提示词直接展示接口返回内容，不做清洗过滤。
       </div>
       <div class="stats">
         <div class="stat"><div class="label">图片条数</div><div class="value">${meta.totalRows}</div></div>
-        <div class="stat"><div class="label">带原作者提示词</div><div class="value">${meta.promptRows}</div></div>
+        <div class="stat"><div class="label">带评论区提示词</div><div class="value">${meta.promptRows}</div></div>
         <div class="stat"><div class="label">反推成功</div><div class="value">${meta.reverseOkRows}</div></div>
         <div class="stat"><div class="label">失败/待补抓</div><div class="value">${meta.reverseFailRows}</div></div>
-      </div>
-      <div class="desc" style="margin-top:10px;">
-        当前页共检测到 ${repeatedFragmentCount} 个重复片段，已在展示时自动过滤。
       </div>
     </section>
 
@@ -749,7 +839,7 @@ function buildHtml(rows, meta) {
             <th>序列</th>
             <th>用户</th>
             <th>图片</th>
-            <th>原作者提示词</th>
+            <th>评论区提示词</th>
             <th>反推提示词</th>
           </tr>
         </thead>
@@ -774,7 +864,7 @@ async function main() {
     lang: cli.lang,
   });
 
-  const inputFile = path.resolve(cli.inputFile);
+  const inputFile = await chooseInputFile(cli);
   const inputBase = path.basename(inputFile, path.extname(inputFile));
   const outputDir = path.resolve(cli.outputDir || `${inputBase}${DEFAULT_PROMPT_EXPORT_SUFFIX}`);
   const imagesDir = path.join(outputDir, "images");
@@ -839,7 +929,6 @@ async function main() {
     return;
   }
 
-  const passport = cli.skipReverse ? "" : await getPassport(baseConfig);
   const rawCheckpoint = cli.resume ? await readJsonIfExists(checkpointPath) : null;
   const shouldResume = cli.resume && checkpointMatches(rawCheckpoint, checkpointMeta);
   const checkpointMap = new Map();
@@ -857,18 +946,28 @@ async function main() {
     console.log(`检测到断点记录：${checkpointMap.size}/${rows.length} 条，可继续处理剩余部分。`);
   }
 
-  const initialRows = rows.map((row) => {
+  const records = rows.map((row) => {
     const saved = checkpointMap.get(row.rowKey);
-    return normalizeSavedRow(saved, row);
+    return normalizeSavedRow(saved, row) || {
+      ...row,
+      status: "pending",
+      originalPrompt: normalizeText(row.originalPrompt, "无"),
+      reversePrompt: "",
+      reverseError: "",
+      localImageAbs: "",
+      localImageRel: "",
+    };
   });
   let pendingCheckpointWrite = Promise.resolve();
+  const progress = createProgressRenderer();
+  const downloadCache = new Map();
 
   async function persistCheckpoint() {
     const payload = {
       version: 1,
       meta: checkpointMeta,
       updatedAt: new Date().toISOString(),
-      rows: initialRows.filter(Boolean),
+      rows: records.filter(Boolean),
     };
     await writeJsonAtomic(checkpointPath, payload);
   }
@@ -882,112 +981,206 @@ async function main() {
     return pendingCheckpointWrite;
   }
 
-  function getProgressCount() {
-    return initialRows.filter((row) => row && (row.status === "done" || row.status === "error")).length;
+  function isReverseSatisfied(record) {
+    return record.status === "done" && hasActualText(record.reversePrompt) && !record.reverseError;
   }
 
-  const downloadCache = new Map();
-  const preparedRows = await mapWithConcurrency(rows, Math.max(1, cli.concurrency), async (row, index) => {
-    const savedRow = initialRows[index];
-    if (
-      savedRow?.status === "done"
-      && savedRow.localImageAbs
-      && (await fileExists(savedRow.localImageAbs))
-      && (cli.skipReverse || hasActualText(savedRow.reversePrompt))
-    ) {
-      return savedRow;
-    }
+  function renderDashboard({
+    stageText = "准备开始",
+    downloadDone = 0,
+    downloadTotal = 0,
+    reverseDone = 0,
+    reverseTotal = 0,
+    reverseSkipped = false,
+  }) {
+    const promptRows = records.filter((record) => normalizeText(record.originalPrompt, "无") !== "无").length;
+    progress.render([
+      "小红书评论图片一键转换",
+      `源文件：${path.relative(process.cwd(), inputFile)}`,
+      `输出目录：${path.relative(process.cwd(), outputDir)}`,
+      `评论区提示词：已提取 ${promptRows}/${records.length} 条`,
+      `下载图片：${formatProgressBar(downloadDone, downloadTotal)}`,
+      reverseSkipped
+        ? "评论区提示词反推：已跳过"
+        : `反推提示词：${formatProgressBar(reverseDone, reverseTotal)}`,
+      `当前状态：${stageText}`,
+    ]);
+  }
 
-    const result = normalizeSavedRow(savedRow, row) || {
-      ...row,
-      status: "pending",
-      reversePrompt: "",
-      reverseError: "",
-      localImageAbs: "",
-      localImageRel: "",
-    };
+  renderDashboard({ stageText: "正在分析待处理任务" });
 
-    try {
-      let localImageAbs = result.localImageAbs;
-      if (!localImageAbs || !(await fileExists(localImageAbs))) {
-        const imageKey = row.imageUrl;
-        let cachedImage = downloadCache.get(imageKey);
+  const downloadPlan = await Promise.all(records.map(async (record, index) => ({
+    index,
+    needsDownload: !(record.localImageAbs && await fileExists(record.localImageAbs)),
+  })));
+  const downloadTargets = downloadPlan.filter((item) => item.needsDownload).map((item) => item.index);
+  const concurrency = Math.max(1, cli.concurrency);
 
-        if (!cachedImage) {
-          const downloadPromise = (async () => {
-            const baseName = `${String(index + 1).padStart(4, "0")}_${makeSafeName(row.user)}_${row.kind}_${row.imageIndex}`;
-            const tempTarget = path.join(imagesDir, `${baseName}.bin`);
-            const { contentType } = await downloadImage(row.imageUrl, tempTarget);
-            const finalTarget = path.join(imagesDir, `${baseName}${extFromContentType(contentType)}`);
-            await fs.rename(tempTarget, finalTarget);
-            return finalTarget;
-          })();
-          downloadCache.set(imageKey, downloadPromise);
-          cachedImage = downloadPromise;
-        }
-
-        localImageAbs = typeof cachedImage?.then === "function" ? await cachedImage : cachedImage;
-        downloadCache.set(row.imageUrl, localImageAbs);
-      }
-
-      result.localImageAbs = localImageAbs;
-      result.localImageRel = path.relative(outputDir, localImageAbs).split(path.sep).join("/");
-      result.reversePrompt = result.reversePrompt || "";
-      result.reverseError = "";
-
-      if (!cli.skipReverse) {
-        const shouldRetryReverse = result.status !== "done" || !hasActualText(result.reversePrompt);
-        if (shouldRetryReverse) {
-          const uploaded = await uploadImage({ ...baseConfig, passport, imagePath: localImageAbs });
-          const runResult = await runWorkflow({
-            ...baseConfig,
-            passport,
-            lang: cli.lang || "简体中文",
-            uploadFileId: uploaded.id,
-          });
-          const cleanedPrompt = sanitizeReversePrompt(extractPrompt(runResult.output));
-          result.reversePrompt = cleanedPrompt || "无";
-        } else {
-          result.reversePrompt = sanitizeReversePrompt(result.reversePrompt) || "无";
-        }
-      }
-
-      result.status = "done";
-    } catch (error) {
-      result.status = "error";
-      result.reverseError = error instanceof Error ? error.message : String(error);
-    }
-
-    initialRows[index] = result;
-    await queueCheckpointSave();
-
-    const progressCount = getProgressCount();
-    if (progressCount === 1 || progressCount % 10 === 0 || progressCount === rows.length) {
-      console.log(`已完成 ${progressCount}/${rows.length} 条图片记录`);
-    }
-
-    return result;
+  let downloadDone = 0;
+  renderDashboard({
+    stageText: downloadTargets.length > 0 ? "开始下载图片" : "没有需要下载的图片",
+    downloadDone: 0,
+    downloadTotal: downloadTargets.length,
+    reverseDone: 0,
+    reverseTotal: 0,
+    reverseSkipped: cli.skipReverse,
   });
+
+  if (downloadTargets.length > 0) {
+    await mapWithConcurrency(downloadTargets, concurrency, async (rowIndex) => {
+      const record = records[rowIndex];
+
+      try {
+        let localImageAbs = record.localImageAbs;
+        if (!localImageAbs || !(await fileExists(localImageAbs))) {
+          const imageKey = record.imageUrl;
+          let cachedImage = downloadCache.get(imageKey);
+
+          if (!cachedImage) {
+            const downloadPromise = (async () => {
+              const baseName = `${String(rowIndex + 1).padStart(4, "0")}_${makeSafeName(record.user)}_${record.kind}_${record.imageIndex}`;
+              const tempTarget = path.join(imagesDir, `${baseName}.bin`);
+              const { contentType } = await downloadImage(record.imageUrl, tempTarget);
+              const finalTarget = path.join(imagesDir, `${baseName}${extFromContentType(contentType)}`);
+              await fs.rename(tempTarget, finalTarget);
+              return finalTarget;
+            })();
+            downloadCache.set(imageKey, downloadPromise);
+            cachedImage = downloadPromise;
+          }
+
+          localImageAbs = typeof cachedImage?.then === "function" ? await cachedImage : cachedImage;
+          downloadCache.set(record.imageUrl, localImageAbs);
+        }
+
+        record.localImageAbs = localImageAbs;
+        record.localImageRel = path.relative(outputDir, localImageAbs).split(path.sep).join("/");
+        record.reverseError = "";
+
+        if (cli.skipReverse || isReverseSatisfied(record)) {
+          record.status = "done";
+        } else {
+          record.status = "downloaded";
+        }
+      } catch (error) {
+        record.status = "error";
+        record.reverseError = error instanceof Error ? error.message : String(error);
+      }
+
+      downloadDone += 1;
+      await queueCheckpointSave();
+      renderDashboard({
+        stageText: `下载中 ${downloadDone}/${downloadTargets.length}`,
+        downloadDone,
+        downloadTotal: downloadTargets.length,
+        reverseDone: 0,
+        reverseTotal: 0,
+        reverseSkipped: cli.skipReverse,
+      });
+
+      return record;
+    });
+  }
+
+  const reversePlan = cli.skipReverse
+    ? []
+    : await Promise.all(records.map(async (record, index) => {
+      const hasLocalImage = record.localImageAbs && await fileExists(record.localImageAbs);
+      return {
+        index,
+        needsReverse: hasLocalImage && !isReverseSatisfied(record) && record.status !== "error",
+      };
+    }));
+  const reverseTargets = reversePlan.filter((item) => item.needsReverse).map((item) => item.index);
+  let reverseDone = 0;
+  let passport = "";
+
+  if (!cli.skipReverse && reverseTargets.length > 0) {
+    passport = await getPassport(baseConfig);
+  }
+
+  renderDashboard({
+    stageText: cli.skipReverse
+      ? "已跳过评论区提示词反推"
+      : reverseTargets.length > 0
+        ? "开始评论区提示词反推"
+        : "没有需要反推的图片",
+    downloadDone,
+    downloadTotal: downloadTargets.length,
+    reverseDone: 0,
+    reverseTotal: reverseTargets.length,
+    reverseSkipped: cli.skipReverse,
+  });
+
+  if (!cli.skipReverse && reverseTargets.length > 0) {
+    await mapWithConcurrency(reverseTargets, concurrency, async (rowIndex) => {
+      const record = records[rowIndex];
+
+      try {
+        if (!record.localImageAbs || !(await fileExists(record.localImageAbs))) {
+          throw new Error("本地图片不存在，无法进行评论区提示词反推");
+        }
+
+        const uploaded = await uploadImage({ ...baseConfig, passport, imagePath: record.localImageAbs });
+        const runResult = await runWorkflow({
+          ...baseConfig,
+          passport,
+          lang: cli.lang || "简体中文",
+          uploadFileId: uploaded.id,
+        });
+        const rawPrompt = extractPrompt(runResult.output);
+        record.reversePrompt = typeof rawPrompt === "string" ? rawPrompt : String(rawPrompt ?? "");
+        record.reverseError = "";
+        record.status = "done";
+      } catch (error) {
+        record.status = "error";
+        record.reverseError = error instanceof Error ? error.message : String(error);
+      }
+
+      reverseDone += 1;
+      await queueCheckpointSave();
+      renderDashboard({
+        stageText: `反推中 ${reverseDone}/${reverseTargets.length}`,
+        downloadDone,
+        downloadTotal: downloadTargets.length,
+        reverseDone,
+        reverseTotal: reverseTargets.length,
+        reverseSkipped: false,
+      });
+
+      return record;
+    });
+  }
 
   const summary = {
     inputFile: path.basename(inputFile),
     outputDir,
-    totalRows: preparedRows.length,
-    promptRows: preparedRows.filter((row) => normalizeText(row.originalPrompt, "无") !== "无").length,
-    reverseOkRows: preparedRows.filter((row) => row.status === "done" && hasActualText(row.reversePrompt) && !row.reverseError).length,
-    reverseFailRows: preparedRows.filter((row) => row.status !== "done" || row.reverseError || !hasActualText(row.reversePrompt)).length,
+    totalRows: records.length,
+    downloadRows: downloadTargets.length,
+    reverseRows: reverseTargets.length,
+    promptRows: records.filter((record) => normalizeText(record.originalPrompt, "无") !== "无").length,
+    reverseOkRows: records.filter((record) => record.status === "done" && hasActualText(record.reversePrompt) && !record.reverseError).length,
+    reverseFailRows: records.filter((record) => record.status !== "done" || record.reverseError || !hasActualText(record.reversePrompt)).length,
   };
 
-  await fs.writeFile(jsonPath, JSON.stringify({ summary, rows: preparedRows }, null, 2), "utf8");
-  await fs.writeFile(htmlPath, buildHtml(preparedRows, summary), "utf8");
+  await queueCheckpointSave();
+  await fs.writeFile(jsonPath, JSON.stringify({ summary, rows: records }, null, 2), "utf8");
+  await fs.writeFile(htmlPath, buildHtml(records, summary), "utf8");
 
-  console.log(JSON.stringify({
-    ok: true,
-    outputDir,
-    htmlPath,
-    jsonPath,
-    summary,
-  }, null, 2));
+  renderDashboard({
+    stageText: "全部完成，正在生成最终页面",
+    downloadDone: downloadTargets.length,
+    downloadTotal: downloadTargets.length,
+    reverseDone: reverseTargets.length,
+    reverseTotal: reverseTargets.length,
+    reverseSkipped: cli.skipReverse,
+  });
+
+  console.log("");
+  console.log("全部完成。");
+  console.log(`输出目录：${outputDir}`);
+  console.log(`HTML 入口：${path.relative(process.cwd(), htmlPath)}`);
+  console.log("直接打开 index.html 即可查看。");
 }
 
 if (process.argv[1] === __filename) {
@@ -996,7 +1189,3 @@ if (process.argv[1] === __filename) {
     process.exitCode = 1;
   });
 }
-
-export {
-  sanitizeReversePrompt,
-};
