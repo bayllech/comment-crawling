@@ -1,0 +1,13 @@
+node_modules/
+.env
+.tmp-gemini-batch/
+.tmp-gemini-batch-test.log
+*.log
+.DS_Store
+.codepilot-uploads/
+*.tmp
+test.jpg
+xhs_comments_*.html
+xhs_comments_*.json
+xhs_comments_*-prompt-export/
+**/.resume.json

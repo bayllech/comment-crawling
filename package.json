@@ -1,0 +1,11 @@
+{
+  "name": "comment-crawling",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "node render-xhs-comments.js",
+    "get-prompt:reverse": "node get-prompt-api.js",
+    "xhs:prompts": "node extract-xhs-image-prompts.js"
+  }
+}

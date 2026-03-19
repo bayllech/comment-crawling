@@ -1,0 +1,246 @@
+await (async function () {
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+function txt(el) {
+  return el ? (el.innerText || el.textContent || "").trim() : "";
+}
+
+function uniq(arr) {
+  return [...new Set(arr.filter(Boolean))];
+}
+
+function isTimeLine(s) {
+  return s && (
+    s.includes("分钟前") ||
+    s.includes("小时前") ||
+    s.includes("昨天") ||
+    s.includes("天前") ||
+    s.includes("刚刚")
+  );
+}
+
+function downloadJSON(name, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], {
+    type: "application/json;charset=utf-8"
+  });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    URL.revokeObjectURL(a.href);
+    a.remove();
+  }, 1000);
+}
+
+function getImages(root) {
+  return uniq(
+    Array.from(root.querySelectorAll("img"))
+      .map(img => img.currentSrc || img.src || "")
+      .filter(u => /^https?:/.test(u))
+      .filter(u => !u.includes("avatar"))
+  );
+}
+
+function parseLines(lines) {
+  if (!lines.length) return null;
+
+  let user = lines[0];
+  let author = false;
+  let text = "";
+  let time = "";
+  let meta = [];
+
+  let idx = 1;
+  if (lines[idx] === "作者") {
+    author = true;
+    idx++;
+  }
+
+  if (idx < lines.length) {
+    text = lines[idx++];
+  }
+
+  for (; idx < lines.length; idx++) {
+    let s = lines[idx];
+    if (!time && isTimeLine(s)) {
+      time = s;
+    } else {
+      meta.push(s);
+    }
+  }
+
+  if (!user || !text) return null;
+  return { user, author, text, time, meta };
+}
+
+function parseTopComment(block) {
+  const root = block.children[0] || block;
+  const lines = txt(root).split("\n").map(s => s.trim()).filter(Boolean);
+  return parseLines(lines);
+}
+
+function parseReplies(block) {
+  let replies = [];
+  const container = block.children[1];
+  if (!container) return replies;
+
+  const replyBlocks = Array.from(container.children);
+
+  for (let el of replyBlocks) {
+    const full = txt(el);
+    if (!full || full.startsWith("展开")) continue;
+
+    const lines = full.split("\n").map(s => s.trim()).filter(Boolean);
+    const parsed = parseLines(lines);
+    if (!parsed) continue;
+
+    parsed.images = getImages(el);
+    replies.push(parsed);
+  }
+
+  return replies;
+}
+
+/***********************
+ * 滚动到底（THE END）
+ ***********************/
+async function scrollToEnd(scroller) {
+  let lastHeight = 0;
+  let stableCount = 0;
+
+  for (let i = 0; i < 200; i++) {
+
+    scroller.scrollTop = scroller.scrollHeight;
+    await sleep(1200);
+
+    let newHeight = scroller.scrollHeight;
+    let endFlag = document.querySelector(".end-container");
+
+    console.log("滚动:", i, "高度:", newHeight, "end:", !!endFlag);
+
+    if (endFlag) {
+      console.log("到底了 THE END ✅");
+      break;
+    }
+
+    if (newHeight === lastHeight) {
+      stableCount++;
+    } else {
+      stableCount = 0;
+    }
+
+    if (stableCount >= 3) {
+      console.log("高度稳定，认为到底");
+      break;
+    }
+
+    lastHeight = newHeight;
+  }
+}
+
+/***********************
+ * 展开所有回复（核心修复）
+ ***********************/
+async function expandAll(scroller) {
+  let stableCount = 0;
+
+  for (let round = 0; round < 200; round++) {
+
+    let expanders = Array.from(
+      scroller.querySelectorAll("*")
+    ).filter(el => {
+      let s = txt(el);
+      return s && s.startsWith("展开"); // ⭐ 核心修复
+    });
+
+    console.log("展开轮:", round, "数量:", expanders.length);
+
+    if (expanders.length === 0) {
+      stableCount++;
+    } else {
+      stableCount = 0;
+    }
+
+    if (stableCount >= 3) {
+      console.log("展开完成 ✅");
+      break;
+    }
+
+    for (let el of expanders) {
+      try { el.click(); } catch (e) {}
+      await sleep(300); // ⭐ 等DOM更新
+    }
+
+    await sleep(1200); // ⭐ 等“展开更多回复”出现
+  }
+}
+
+/***********************
+ * 主流程（关键顺序）
+ ***********************/
+const scroller = document.querySelector(".note-scroller");
+if (!scroller) throw new Error("没找到 .note-scroller");
+
+console.log("① 滚到底...");
+await scrollToEnd(scroller);
+
+console.log("② 展开所有回复...");
+await expandAll(scroller);
+
+console.log("③ 再滚一轮...");
+await scrollToEnd(scroller);
+
+console.log("④ 再展开一轮...");
+await expandAll(scroller);
+
+console.log("⑤ 开始解析...");
+
+const list = document.querySelector(".comments-container .list-container");
+if (!list) throw new Error("没找到评论列表");
+
+const blocks = Array.from(list.querySelectorAll(":scope > .parent-comment"));
+
+let items = [];
+
+for (let i = 0; i < blocks.length; i++) {
+  let block = blocks[i];
+
+  let comment = parseTopComment(block);
+  if (!comment) continue;
+
+  comment.images = getImages(block.children[0] || block);
+
+  let replies = parseReplies(block);
+
+  items.push({
+    index: i + 1,
+    comment,
+    replies
+  });
+}
+
+let result = {
+  url: location.href,
+  title: document.title.replace(" - 小红书", ""),
+  extractedAt: new Date().toISOString(),
+  count: items.length,
+  items
+};
+
+let filename = "xhs_comments_full_" + Date.now() + ".json";
+
+downloadJSON(filename, result);
+
+console.log("抓取完成 ✅", {
+  file: filename,
+  count: result.count
+});
+
+return result;
+
+})();
