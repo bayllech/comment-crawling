@@ -9,6 +9,7 @@ import {
   DEFAULT_COMMENT_JSON_FILE,
   DEFAULT_PROMPT_EXPORT_SUFFIX,
 } from "./project-config.js";
+import { buildPromptFeishuBlocks, syncHtmlToFeishu } from "./feishu-docx-client.js";
 import {
   applyDefaults,
   extractPrompt,
@@ -653,6 +654,99 @@ async function chooseInputFile({ inputFile, inputProvided }) {
   }
 }
 
+function createPromptInterface() {
+  return createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+}
+
+async function askQuestion(rl, question) {
+  return (await rl.question(question)).trim();
+}
+
+async function maybeExportToFeishu({ html, title, sourceFile, sourceUrl, rows, summary }) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.log("当前不是交互式终端，已跳过飞书文档导出。");
+    return;
+  }
+
+  const rl = createPromptInterface();
+
+  try {
+    const exportAnswer = (await askQuestion(
+      rl,
+      "是否导出到飞书文档？输入 y 继续，其他内容跳过："
+    )).toLowerCase();
+
+    if (!["y", "yes", "是", "导出"].includes(exportAnswer)) {
+      console.log("已跳过飞书文档导出。");
+      return;
+    }
+
+    const modeAnswer = (await askQuestion(
+      rl,
+      "请选择写入模式：1=清空覆盖，2=追加到末尾，默认 1："
+    ));
+    const mode = modeAnswer === "2" || modeAnswer.toLowerCase() === "append" ? "append" : "overwrite";
+
+    const defaultDocUrl = process.env.FEISHU_DOC_URL || "";
+    const defaultAppId = process.env.FEISHU_APP_ID || "";
+    const defaultAppSecret = process.env.FEISHU_APP_SECRET || "";
+
+    const docUrl = (await askQuestion(
+      rl,
+      "请输入飞书文档链接或文档 token（请先确认已配置 FEISHU_APP_ID / FEISHU_APP_SECRET，并授予该应用文档编辑权限）："
+    )) || defaultDocUrl;
+    const appId = (await askQuestion(
+      rl,
+      "请输入飞书 App ID（可直接回车使用环境变量 FEISHU_APP_ID）："
+    )) || defaultAppId;
+    const appSecret = (await askQuestion(
+      rl,
+      "请输入飞书 App Secret（可直接回车使用环境变量 FEISHU_APP_SECRET）："
+    )) || defaultAppSecret;
+
+    if (!docUrl) {
+      throw new Error("未提供飞书文档链接或 token");
+    }
+    if (!appId) {
+      throw new Error("未提供飞书 App ID");
+    }
+    if (!appSecret) {
+      throw new Error("未提供飞书 App Secret");
+    }
+
+    const feishuPayload = buildPromptFeishuBlocks({
+      title,
+      sourceFile,
+      sourceUrl,
+      rows: Array.isArray(rows) ? rows : [],
+      meta: summary || {},
+    });
+
+    const result = await syncHtmlToFeishu({
+      targetUrl: docUrl,
+      blocks: feishuPayload.blocks,
+      table: feishuPayload.table,
+      imageUploads: feishuPayload.imageUploads,
+      title,
+      sourceFile,
+      sourceUrl,
+      appId,
+      appSecret,
+      mode,
+    });
+
+    console.log(`飞书文档已${result.mode === "append" ? "追加" : "覆盖"}同步: ${result.documentId}`);
+  } catch (error) {
+    console.error(`飞书导出失败: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  } finally {
+    rl.close();
+  }
+}
+
 function buildHtml(rows, meta) {
   const tableRows = rows.map((row, index) => {
     const promptHtml = escapeHtml(row.originalPrompt || "无").replace(/\n/g, "<br>");
@@ -1164,8 +1258,9 @@ async function main() {
   };
 
   await queueCheckpointSave();
+  const html = buildHtml(records, summary);
   await fs.writeFile(jsonPath, JSON.stringify({ summary, rows: records }, null, 2), "utf8");
-  await fs.writeFile(htmlPath, buildHtml(records, summary), "utf8");
+  await fs.writeFile(htmlPath, html, "utf8");
 
   renderDashboard({
     stageText: "全部完成，正在生成最终页面",
@@ -1181,6 +1276,14 @@ async function main() {
   console.log(`输出目录：${outputDir}`);
   console.log(`HTML 入口：${path.relative(process.cwd(), htmlPath)}`);
   console.log("直接打开 index.html 即可查看。");
+  await maybeExportToFeishu({
+    html,
+    title: `${path.basename(inputFile, path.extname(inputFile))} 评论图片提示词提取结果`,
+    sourceFile: path.basename(inputFile),
+    sourceUrl: data.url || "",
+    rows: records,
+    summary,
+  });
 }
 
 if (process.argv[1] === __filename) {

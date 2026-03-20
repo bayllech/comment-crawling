@@ -11,3 +11,5 @@ xhs_comments_*.html
 xhs_comments_*.json
 xhs_comments_*-prompt-export/
 **/.resume.json
+# CocoIndex Code (ccc)
+/.cocoindex_code/

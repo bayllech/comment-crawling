@@ -6,6 +6,7 @@
   "scripts": {
     "render": "node render-xhs-comments.js",
     "get-prompt:reverse": "node get-prompt-api.js",
-    "xhs:prompts": "node extract-xhs-image-prompts.js"
+    "xhs:prompts": "node extract-xhs-image-prompts.js",
+    "xhs:auto": "node extract-xhs-image-prompts.js"
   }
 }

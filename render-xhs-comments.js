@@ -3,6 +3,8 @@
 import fs from "fs";
 import path from "path";
 import { DEFAULT_COMMENT_JSON_FILE } from "./project-config.js";
+import { loadProjectEnv } from "./prompt-api-client.js";
+import { buildCommentFeishuBlocks, syncHtmlToFeishu } from "./feishu-docx-client.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -654,11 +656,65 @@ function getDefaultOutputPath(inputPath) {
   return inputPath.slice(0, -ext.length) + ".html";
 }
 
-function main() {
-  const inputArg = process.argv[2] || DEFAULT_COMMENT_JSON_FILE;
+function parseRenderArgs(argv) {
+  const args = {
+    inputFile: DEFAULT_COMMENT_JSON_FILE,
+    outputFile: "",
+    feishuDocUrl: "",
+    feishuAppId: "",
+    feishuAppSecret: "",
+  };
+
+  for (let index = 2; index < argv.length; index += 1) {
+    const token = argv[index];
+    if (!token.startsWith("--")) {
+      if (!args.inputFile || args.inputFile === DEFAULT_COMMENT_JSON_FILE) {
+        args.inputFile = token;
+      } else if (!args.outputFile) {
+        args.outputFile = token;
+      }
+      continue;
+    }
+
+    const [flag, inlineValue] = token.split("=", 2);
+    const readValue = () => inlineValue ?? argv[index + 1];
+
+    switch (flag) {
+      case "--input":
+        args.inputFile = readValue();
+        if (!inlineValue) index += 1;
+        break;
+      case "--output":
+        args.outputFile = readValue();
+        if (!inlineValue) index += 1;
+        break;
+      case "--feishu-doc-url":
+        args.feishuDocUrl = readValue();
+        if (!inlineValue) index += 1;
+        break;
+      case "--feishu-app-id":
+        args.feishuAppId = readValue();
+        if (!inlineValue) index += 1;
+        break;
+      case "--feishu-app-secret":
+        args.feishuAppSecret = readValue();
+        if (!inlineValue) index += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return args;
+}
+
+async function main() {
+  loadProjectEnv();
+
+  const cliArgs = parseRenderArgs(process.argv);
+  const inputArg = cliArgs.inputFile || DEFAULT_COMMENT_JSON_FILE;
   const inputPath = path.resolve(process.cwd(), inputArg);
-  const outputArg = process.argv[3];
-  const outputPath = outputArg ? path.resolve(process.cwd(), outputArg) : getDefaultOutputPath(inputPath);
+  const outputPath = cliArgs.outputFile ? path.resolve(process.cwd(), cliArgs.outputFile) : getDefaultOutputPath(inputPath);
 
   if (!fs.existsSync(inputPath)) {
     console.error(`找不到输入文件: ${inputPath}`);
@@ -672,6 +728,57 @@ function main() {
   fs.writeFileSync(outputPath, html, "utf8");
 
   console.log(`HTML 已生成: ${outputPath}`);
+
+  const feishuDocUrl = cliArgs.feishuDocUrl || process.env.FEISHU_DOC_URL || "";
+  const feishuAppId = cliArgs.feishuAppId || process.env.FEISHU_APP_ID || "";
+  const feishuAppSecret = cliArgs.feishuAppSecret || process.env.FEISHU_APP_SECRET || "";
+
+  if (feishuDocUrl) {
+    if (!feishuAppId || !feishuAppSecret) {
+      console.error("已提供飞书文档地址，但未配置 FEISHU_APP_ID / FEISHU_APP_SECRET，跳过同步。");
+      return;
+    }
+
+    try {
+      const totalReplies = Array.isArray(data.items)
+        ? data.items.reduce((sum, item) => sum + (Array.isArray(item?.replies) ? item.replies.length : 0), 0)
+        : 0;
+      const totalImages = Array.isArray(data.items)
+        ? data.items.reduce((sum, item) => {
+            const commentImages = normalizeImages(item?.comment?.images).length;
+            const replyImages = Array.isArray(item?.replies)
+              ? item.replies.reduce((replySum, reply) => replySum + normalizeImages(reply?.images).length, 0)
+              : 0;
+            return sum + commentImages + replyImages;
+          }, 0)
+        : 0;
+      const result = await syncHtmlToFeishu({
+        targetUrl: feishuDocUrl,
+        blocks: buildCommentFeishuBlocks({
+          title: `${path.basename(inputPath, path.extname(inputPath))} 评论展示`,
+          sourceFile: path.basename(inputPath),
+          sourceUrl: data.url || "",
+          items: data.items || [],
+          summary: {
+            totalReplies,
+            totalImages,
+          },
+        }),
+        title: `${path.basename(inputPath, path.extname(inputPath))} 评论展示`,
+        sourceFile: path.basename(inputPath),
+        sourceUrl: data.url || "",
+        appId: feishuAppId,
+        appSecret: feishuAppSecret,
+      });
+      console.log(`飞书文档已同步: ${result.documentId}`);
+    } catch (error) {
+      console.error(`飞书同步失败: ${error.message}`);
+      process.exitCode = 1;
+    }
+  }
 }
 
-main();
+main().catch((error) => {
+  console.error(`渲染失败: ${error.message}`);
+  process.exit(1);
+});

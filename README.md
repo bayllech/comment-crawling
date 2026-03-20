@@ -95,6 +95,33 @@ node render-xhs-comments.js ./你的评论文件.json
 node render-xhs-comments.js ./你的评论文件.json ./输出页面.html
 ```
 
+如果你还想把同一份 HTML 同步到飞书文档，可以直接加飞书目标链接和应用凭证：
+
+```bash
+node render-xhs-comments.js \
+  ./你的评论文件.json \
+  ./输出页面.html \
+  --feishu-doc-url "https://papcv4o6gwt.feishu.cn/wiki/F6XpwCPUniqQ5mku8rScjGU1nie?from=from_copylink" \
+  --feishu-app-id "cli_xxxxxxxxxxxxxxxx" \
+  --feishu-app-secret "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+同步逻辑说明：
+
+- 默认还是只生成本地 HTML，不会影响现有流程
+- 只有在传入 `--feishu-doc-url` 或设置 `FEISHU_DOC_URL` 时，才会触发飞书同步
+- 当前实现会把内容整理成飞书里可直接阅读的结构化正文，再同步到文档中
+- 如果目标是你给出的 wiki 链接，脚本会先解析 Wiki 节点，再把内容写回其对应的 `doc` / `docx` 文档
+- 飞书侧需要一个自建应用，并开启文档相关的写权限
+
+可选环境变量：
+
+```bash
+FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+FEISHU_DOC_URL=https://papcv4o6gwt.feishu.cn/wiki/F6XpwCPUniqQ5mku8rScjGU1nie?from=from_copylink
+```
+
 ## 页面特点
 
 - 使用高密度表格展示主评论和回复，一屏可以看到更多信息
@@ -174,6 +201,9 @@ node extract-xhs-image-prompts.js
 - 自动完成图片下载、评论区提示词提取、反推提示词
 - 在终端显示进度条和当前阶段
 - 最后输出完成提示，并告知你直接打开 `index.html` 即可查看
+- 任务结束后会继续询问是否导出到飞书文档，并让你选择 `清空覆盖` 或 `追加到末尾`
+- 如果选择导出，会要求你输入飞书文档链接或 token，并使用 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 完成写入
+- 导出前请先确认飞书自建应用已配置好文档编辑权限，否则会写入失败
 
 如果你想指定输入和输出目录，仍然支持原来的参数方式：
 
@@ -214,3 +244,5 @@ npm run xhs:prompts -- ./xhs_comments.json ./xhs_comments-prompt-export
 - 评论区提示词会在同一线程内优先收集更像提示词的评论文本，不再只认同一作者
 - 反推提示词会默认使用 `user_code=260220`，并原样保留接口返回内容
 - 如果找不到评论区提示词，导出结果会写 `无`
+- 飞书同步使用的是飞书开放平台的文档 API，不是网页端自动化，因此需要可用的应用凭证
+- 飞书导出时会先把本地图片上传为文档图片块，再写入按图片记录组织的表格，保留 `序列 / 用户 / 类型 / 图片序号 / 状态 / 评论区提示词 / 反推提示词 / 图片` 等信息
