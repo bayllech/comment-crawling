@@ -10,7 +10,7 @@ import {
   DEFAULT_CHECKPOINT_FILE_NAME,
   DEFAULT_COMMENT_JSON_FILE,
   DEFAULT_PROMPT_EXPORT_SUFFIX,
-} from "./project-config.js";
+} from "../lib/project-config.js";
 import {
   applyDefaults,
   extractPrompt,
@@ -18,7 +18,7 @@ import {
   loadProjectEnv,
   runWorkflow,
   uploadImage,
-} from "./prompt-api-client.js";
+} from "../lib/prompt-api-client.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

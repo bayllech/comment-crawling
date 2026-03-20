@@ -9,12 +9,12 @@ import {
   parseArgs,
   runWorkflow,
   uploadImage,
-} from "./prompt-api-client.js";
+} from "../lib/prompt-api-client.js";
 
 function printUsage() {
   console.log([
     "用法：",
-    "  node get-prompt-api.js --user-code <用户码> --image <图片路径> [--lang English|简体中文]",
+    "  node scripts/get-prompt-cli.js --user-code <用户码> --image <图片路径> [--lang English|简体中文]",
     "",
     "环境变量：",
     "  GET_PROMPT_BASE_URL    默认 https://ai.yaokemao.com",

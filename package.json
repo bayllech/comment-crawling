@@ -4,10 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "render": "node render-xhs-comments.js",
-    "get-prompt:reverse": "node get-prompt-api.js",
-    "xhs:prompts": "node extract-xhs-image-prompts.js",
-    "xhs:auto": "node extract-xhs-image-prompts.js"
+    "comments:html": "node scripts/xhs-render-comments.js",
+    "prompt:reverse": "node scripts/get-prompt-cli.js",
+    "xhs:export": "node scripts/xhs-export-prompts.js",
+    "render": "node scripts/xhs-render-comments.js",
+    "get-prompt:reverse": "node scripts/get-prompt-cli.js",
+    "xhs:prompts": "node scripts/xhs-export-prompts.js",
+    "xhs:auto": "node scripts/xhs-export-prompts.js"
   },
   "dependencies": {
     "exceljs": "^4.4.0",

@@ -2,8 +2,8 @@
 
 import fs from "fs";
 import path from "path";
-import { DEFAULT_COMMENT_JSON_FILE } from "./project-config.js";
-import { loadProjectEnv } from "./prompt-api-client.js";
+import { DEFAULT_COMMENT_JSON_FILE } from "../lib/project-config.js";
+import { loadProjectEnv } from "../lib/prompt-api-client.js";
 
 function escapeHtml(value) {
   return String(value ?? "")
