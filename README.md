@@ -200,7 +200,7 @@ node extract-xhs-image-prompts.js
 - 在有多个候选时让你选一个，基本只需要输入编号
 - 自动完成图片下载、评论区提示词提取、反推提示词
 - 在终端显示进度条和当前阶段
-- 最后输出完成提示，并告知你直接打开 `index.html` 即可查看
+- 最后输出完成提示，并告知你直接打开 `index.html` 或 `index.xlsx` 即可查看
 - 任务结束后会继续询问是否导出到飞书文档，并让你选择 `清空覆盖` 或 `追加到末尾`
 - 如果选择导出，会要求你输入飞书文档链接或 token，并使用 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 完成写入
 - 导出前请先确认飞书自建应用已配置好文档编辑权限，否则会写入失败
@@ -220,6 +220,7 @@ npm run xhs:prompts -- ./xhs_comments.json ./xhs_comments-prompt-export
 输出内容：
 
 - `index.html`：可离线打开的报告，图片已下载到本地目录
+- `index.xlsx`：Excel 报告，图片以单元格锚定方式写入，便于筛选和交付
 - `images/`：本地图片文件
 - `rows.json`：结构化结果，便于二次处理
 
@@ -240,6 +241,7 @@ npm run xhs:prompts -- ./xhs_comments.json ./xhs_comments-prompt-export
 说明：
 
 - 图片链接来自小红书 CDN，具有时效性，所以脚本会先把图片保存到本地
+- Excel 导出会优先复用本地图片；如果源图是 `webp` 等 Excel 兼容性较差的格式，会在写入工作簿时自动转成 `png`
 - 评论区提示词会优先从“同一作者、同一线程、连续的提示词分段”中合并
 - 评论区提示词会在同一线程内优先收集更像提示词的评论文本，不再只认同一作者
 - 反推提示词会默认使用 `user_code=260220`，并原样保留接口返回内容

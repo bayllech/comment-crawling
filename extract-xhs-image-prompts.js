@@ -4,6 +4,8 @@ import fs from "fs/promises";
 import path from "path";
 import { createInterface } from "readline/promises";
 import { fileURLToPath } from "url";
+import ExcelJS from "exceljs";
+import sharp from "sharp";
 import {
   DEFAULT_CHECKPOINT_FILE_NAME,
   DEFAULT_COMMENT_JSON_FILE,
@@ -947,6 +949,200 @@ function buildHtml(rows, meta) {
 </html>`;
 }
 
+function normalizeExcelImageExtension(imagePath) {
+  const ext = path.extname(imagePath).toLowerCase();
+  if (ext === ".png") return "png";
+  if (ext === ".gif") return "gif";
+  if (ext === ".jpg" || ext === ".jpeg") return "jpeg";
+  return "";
+}
+
+async function readExcelImagePayload(imagePath) {
+  const extension = normalizeExcelImageExtension(imagePath);
+  if (extension) {
+    return {
+      extension,
+      buffer: await fs.readFile(imagePath),
+    };
+  }
+
+  const converted = await sharp(imagePath).png().toBuffer();
+  return {
+    extension: "png",
+    buffer: converted,
+  };
+}
+
+const EXCEL_IMAGE_BOX = {
+  width: 132,
+  height: 132,
+  paddingX: 8,
+  paddingY: 6,
+  cellWidth: 160,
+  cellHeight: 144,
+};
+
+function buildExcelUserCell(row) {
+  const parts = [
+    normalizeText(row.user, "匿名用户"),
+    `${normalizeText(row.kind, "未知类型")} · 线程 ${row.threadIndex ?? "-"}`,
+  ];
+
+  if (Number(row.imageTotal) > 1) {
+    parts[1] += ` · 第 ${row.imageIndex}/${row.imageTotal} 张`;
+  }
+
+  return parts.join("\n");
+}
+
+async function buildExcelImagePlacement(imagePath, rowNumber) {
+  const metadata = await sharp(imagePath).metadata();
+  const sourceWidth = Number(metadata.width) || EXCEL_IMAGE_BOX.width;
+  const sourceHeight = Number(metadata.height) || EXCEL_IMAGE_BOX.height;
+  const scale = Math.min(
+    EXCEL_IMAGE_BOX.width / sourceWidth,
+    EXCEL_IMAGE_BOX.height / sourceHeight,
+    1,
+  );
+  const renderWidth = Math.max(1, Math.round(sourceWidth * scale));
+  const renderHeight = Math.max(1, Math.round(sourceHeight * scale));
+  const offsetX = EXCEL_IMAGE_BOX.paddingX + Math.max(0, (EXCEL_IMAGE_BOX.width - renderWidth) / 2);
+  const offsetY = EXCEL_IMAGE_BOX.paddingY + Math.max(0, (EXCEL_IMAGE_BOX.height - renderHeight) / 2);
+  const cellTopLeft = { col: 2, row: rowNumber - 1 };
+
+  return {
+    tl: {
+      col: cellTopLeft.col + (offsetX / EXCEL_IMAGE_BOX.cellWidth),
+      row: cellTopLeft.row + (offsetY / EXCEL_IMAGE_BOX.cellHeight),
+    },
+    ext: {
+      width: renderWidth,
+      height: renderHeight,
+    },
+    editAs: "oneCell",
+  };
+}
+
+async function exportExcelReport(rows, meta, outputPath) {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "comment-crawling";
+  workbook.created = new Date();
+  workbook.modified = new Date();
+
+  const worksheet = workbook.addWorksheet("图片提示词", {
+    views: [{ state: "frozen", xSplit: 3, ySplit: 1 }],
+    properties: { defaultRowHeight: 24 },
+  });
+
+  worksheet.columns = [
+    { header: "序列", key: "index", width: 8 },
+    { header: "用户", key: "user", width: 26 },
+    { header: "图片", key: "image", width: 22 },
+    { header: "评论区提示词", key: "originalPrompt", width: 72 },
+    { header: "反推提示词", key: "reversePrompt", width: 72 },
+  ];
+
+  const headerRow = worksheet.getRow(1);
+  headerRow.height = 24;
+  headerRow.font = { bold: true, color: { argb: "FF8A5A44" } };
+  headerRow.alignment = { vertical: "middle", horizontal: "left" };
+  headerRow.eachCell((cell) => {
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFF6EFE6" },
+    };
+    cell.border = {
+      top: { style: "thin", color: { argb: "FFD8CBBB" } },
+      left: { style: "thin", color: { argb: "FFD8CBBB" } },
+      bottom: { style: "thin", color: { argb: "FFD8CBBB" } },
+      right: { style: "thin", color: { argb: "FFD8CBBB" } },
+    };
+  });
+
+  worksheet.autoFilter = "A1:E1";
+
+  for (const [index, row] of rows.entries()) {
+    const rowNumber = index + 2;
+    const reverseText = row.reverseError
+      || (hasActualText(row.reversePrompt) ? row.reversePrompt : "待补抓");
+
+    worksheet.getCell(`A${rowNumber}`).value = index + 1;
+    worksheet.getCell(`B${rowNumber}`).value = buildExcelUserCell(row);
+    worksheet.getCell(`C${rowNumber}`).value = "";
+    worksheet.getCell(`D${rowNumber}`).value = normalizeText(row.originalPrompt, "无");
+    worksheet.getCell(`E${rowNumber}`).value = reverseText;
+
+    worksheet.getRow(rowNumber).height = 108;
+
+    ["A", "B", "C", "D", "E"].forEach((column) => {
+      const cell = worksheet.getCell(`${column}${rowNumber}`);
+      cell.alignment = {
+        vertical: column === "C" ? "middle" : "top",
+        horizontal: column === "A" || column === "C" ? "center" : "left",
+        wrapText: column !== "C",
+      };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE7DCCD" } },
+        left: { style: "thin", color: { argb: "FFE7DCCD" } },
+        bottom: { style: "thin", color: { argb: "FFE7DCCD" } },
+        right: { style: "thin", color: { argb: "FFE7DCCD" } },
+      };
+    });
+
+    if (row.localImageAbs && await fileExists(row.localImageAbs)) {
+      const imagePayload = await readExcelImagePayload(row.localImageAbs);
+      const imageId = workbook.addImage(imagePayload);
+      const placement = await buildExcelImagePlacement(row.localImageAbs, rowNumber);
+      worksheet.addImage(imageId, placement);
+    } else {
+      worksheet.getCell(`C${rowNumber}`).value = row.status === "error" ? "未完成" : "处理中";
+      worksheet.getCell(`C${rowNumber}`).alignment = {
+        vertical: "middle",
+        horizontal: "center",
+        wrapText: true,
+      };
+    }
+  }
+
+  worksheet.eachRow((row) => {
+    row.eachCell((cell) => {
+      if (cell.col === 1) {
+        cell.alignment = { ...cell.alignment, horizontal: "center" };
+      }
+    });
+  });
+
+  const summary = workbook.addWorksheet("导出摘要");
+  summary.columns = [
+    { header: "字段", key: "label", width: 20 },
+    { header: "值", key: "value", width: 80 },
+  ];
+  summary.getRow(1).font = { bold: true };
+  [
+    ["来源文件", meta.inputFile || ""],
+    ["输出目录", meta.outputDir || ""],
+    ["图片条数", meta.totalRows ?? 0],
+    ["带评论区提示词", meta.promptRows ?? 0],
+    ["反推成功", meta.reverseOkRows ?? 0],
+    ["失败/待补抓", meta.reverseFailRows ?? 0],
+    ["导出时间", new Date().toLocaleString("zh-CN", { hour12: false })],
+  ].forEach((item) => summary.addRow(item));
+  summary.eachRow((row) => {
+    row.eachCell((cell) => {
+      cell.alignment = { vertical: "middle", wrapText: true };
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE7DCCD" } },
+        left: { style: "thin", color: { argb: "FFE7DCCD" } },
+        bottom: { style: "thin", color: { argb: "FFE7DCCD" } },
+        right: { style: "thin", color: { argb: "FFE7DCCD" } },
+      };
+    });
+  });
+
+  await workbook.xlsx.writeFile(outputPath);
+}
+
 async function main() {
   loadProjectEnv();
 
@@ -963,6 +1159,7 @@ async function main() {
   const outputDir = path.resolve(cli.outputDir || `${inputBase}${DEFAULT_PROMPT_EXPORT_SUFFIX}`);
   const imagesDir = path.join(outputDir, "images");
   const htmlPath = path.join(outputDir, "index.html");
+  const excelPath = path.join(outputDir, "index.xlsx");
   const jsonPath = path.join(outputDir, "rows.json");
   const checkpointPath = path.join(outputDir, DEFAULT_CHECKPOINT_FILE_NAME);
 
@@ -1011,11 +1208,13 @@ async function main() {
 
     await fs.writeFile(jsonPath, JSON.stringify({ summary, rows: mergedRows }, null, 2), "utf8");
     await fs.writeFile(htmlPath, buildHtml(mergedRows, summary), "utf8");
+    await exportExcelReport(mergedRows, summary, excelPath);
 
     console.log(JSON.stringify({
       ok: true,
       outputDir,
       htmlPath,
+      excelPath,
       jsonPath,
       summary,
       renderOnly: true,
@@ -1261,6 +1460,7 @@ async function main() {
   const html = buildHtml(records, summary);
   await fs.writeFile(jsonPath, JSON.stringify({ summary, rows: records }, null, 2), "utf8");
   await fs.writeFile(htmlPath, html, "utf8");
+  await exportExcelReport(records, summary, excelPath);
 
   renderDashboard({
     stageText: "全部完成，正在生成最终页面",
@@ -1275,6 +1475,7 @@ async function main() {
   console.log("全部完成。");
   console.log(`输出目录：${outputDir}`);
   console.log(`HTML 入口：${path.relative(process.cwd(), htmlPath)}`);
+  console.log(`Excel 入口：${path.relative(process.cwd(), excelPath)}`);
   console.log("直接打开 index.html 即可查看。");
   await maybeExportToFeishu({
     html,

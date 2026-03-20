@@ -471,13 +471,19 @@ function buildTableCellBlock(children = []) {
 }
 
 function buildTableBlock({ rowSize, columnSize, columnWidth = [], children = [] }) {
+  const property = {
+    row_size: rowSize,
+    column_size: columnSize,
+  };
+
+  if (Array.isArray(columnWidth) && columnWidth.length === columnSize) {
+    property.column_width = columnWidth;
+  }
+
   return {
     block_type: 31,
     table: {
-      property: {
-        row_size: rowSize,
-        column_size: columnSize,
-      },
+      property,
     },
   };
 }
@@ -798,7 +804,8 @@ function buildPromptTableData(rows = []) {
 
   return {
     columns: ["序列", "用户", "图片", "评论区提示词", "反推提示词"],
-    columnWidth: [90, 220, 260, 700, 700],
+    columnWidth: [60, 170, 180, 320, 320],
+    groupSize: 20,
     rows: tableRows.map((row, index) => {
       const reverseText = row.reverseError
         ? `失败：${normalizePlainText(row.reverseError, "")}`
@@ -849,6 +856,7 @@ function buildPromptFeishuBlocks({ title, sourceFile, sourceUrl, rows = [], meta
     buildLabelValueBlock("带评论区提示词", promptRows),
     buildLabelValueBlock("反推成功", reverseOkRows),
     buildLabelValueBlock("失败/待补抓", reverseFailRows),
+    buildParagraphBlock("下方内容按图片记录逐行展示。由于飞书 docx 表格接口存在尺寸限制，导出时采用“顶部单次表头 + 后续宽列行表 + 分组标题”的稳定写法。"),
     buildSpacerBlock(),
   ];
   const table = buildPromptTableData(rows);
@@ -896,6 +904,8 @@ async function fillPromptTable({
   }
 
   const columnSize = table.columns.length;
+  const columnWidth = Array.isArray(table.columnWidth) ? table.columnWidth : [];
+  const groupSize = Number(table.groupSize) > 0 ? Number(table.groupSize) : 20;
   let currentIndex = index;
   const tableMetas = [];
 
@@ -909,6 +919,7 @@ async function fillPromptTable({
         buildTableBlock({
           rowSize: 1,
           columnSize,
+          columnWidth,
         }),
       ],
     });
@@ -973,7 +984,23 @@ async function fillPromptTable({
   }
 
   await createSingleRowTable(table.columns.map((title) => ({ kind: "text", lines: [title], boldFirstLine: true })));
-  for (const row of table.rows) {
+  for (let rowIndex = 0; rowIndex < table.rows.length; rowIndex += 1) {
+    if (rowIndex % groupSize === 0) {
+      const start = rowIndex + 1;
+      const end = Math.min(rowIndex + groupSize, table.rows.length);
+      await insertDocumentBlocks({
+        documentId,
+        parentId,
+        accessToken,
+        index: currentIndex,
+        blocks: [
+          buildStyledParagraphBlock(`记录 ${start}-${end}`, { bold: true }),
+        ],
+      });
+      currentIndex += 1;
+    }
+
+    const row = table.rows[rowIndex];
     await createSingleRowTable(row);
   }
 
