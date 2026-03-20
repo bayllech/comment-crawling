@@ -995,6 +995,10 @@ function buildExcelUserCell(row) {
   return parts.join("\n");
 }
 
+function buildExcelPromptCell(text, fallback) {
+  return `\n${normalizeText(text, fallback)}\n`;
+}
+
 async function buildExcelImagePlacement(imagePath, rowNumber) {
   const metadata = await sharp(imagePath).metadata();
   const sourceWidth = Number(metadata.width) || EXCEL_IMAGE_BOX.width;
@@ -1060,8 +1064,6 @@ async function exportExcelReport(rows, meta, outputPath) {
     };
   });
 
-  worksheet.autoFilter = "A1:E1";
-
   for (const [index, row] of rows.entries()) {
     const rowNumber = index + 2;
     const reverseText = row.reverseError
@@ -1070,10 +1072,10 @@ async function exportExcelReport(rows, meta, outputPath) {
     worksheet.getCell(`A${rowNumber}`).value = index + 1;
     worksheet.getCell(`B${rowNumber}`).value = buildExcelUserCell(row);
     worksheet.getCell(`C${rowNumber}`).value = "";
-    worksheet.getCell(`D${rowNumber}`).value = normalizeText(row.originalPrompt, "无");
-    worksheet.getCell(`E${rowNumber}`).value = reverseText;
+    worksheet.getCell(`D${rowNumber}`).value = buildExcelPromptCell(row.originalPrompt, "无");
+    worksheet.getCell(`E${rowNumber}`).value = buildExcelPromptCell(reverseText, "待补抓");
 
-    worksheet.getRow(rowNumber).height = 108;
+    worksheet.getRow(rowNumber).height = 124;
 
     ["A", "B", "C", "D", "E"].forEach((column) => {
       const cell = worksheet.getCell(`${column}${rowNumber}`);
