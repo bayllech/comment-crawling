@@ -894,17 +894,13 @@ const EXCEL_IMAGE_BOX = {
   cellHeight: 144,
 };
 
+const EXCEL_FONT = {
+  name: "Source Han Sans SC",
+  size: 11,
+};
+
 function buildExcelUserCell(row) {
-  const parts = [
-    normalizeText(row.user, "匿名用户"),
-    `${normalizeText(row.kind, "未知类型")} · 线程 ${row.threadIndex ?? "-"}`,
-  ];
-
-  if (Number(row.imageTotal) > 1) {
-    parts[1] += ` · 第 ${row.imageIndex}/${row.imageTotal} 张`;
-  }
-
-  return parts.join("\n");
+  return normalizeText(row.user, "匿名用户");
 }
 
 function buildExcelPromptCell(text, fallback) {
@@ -955,9 +951,10 @@ async function fillExcelWorksheet({
 
   const headerRow = worksheet.getRow(1);
   headerRow.height = layout.headerHeight;
-  headerRow.font = { bold: true, color: { argb: "FF8A5A44" } };
+  headerRow.font = { ...EXCEL_FONT, bold: true, color: { argb: "FF8A5A44" } };
   headerRow.alignment = { vertical: "middle", horizontal: "left" };
   headerRow.eachCell((cell) => {
+    cell.font = { ...EXCEL_FONT, bold: true, color: { argb: "FF8A5A44" } };
     cell.fill = {
       type: "pattern",
       pattern: "solid",
@@ -986,6 +983,7 @@ async function fillExcelWorksheet({
 
     ["A", "B", "C", "D", "E"].forEach((column) => {
       const cell = worksheet.getCell(`${column}${rowNumber}`);
+      cell.font = { ...EXCEL_FONT };
       cell.alignment = {
         vertical: column === "C" ? "middle" : "top",
         horizontal: column === "A" || column === "C" ? "center" : "left",
@@ -1031,7 +1029,7 @@ async function exportExcelReport(rows, meta, outputPath) {
     rows,
     layout: {
       indexWidth: 8,
-      userWidth: 26,
+      userWidth: 18,
       imageWidth: 22,
       promptWidth: 72,
       reverseWidth: 72,
